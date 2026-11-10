@@ -22,96 +22,156 @@
 
 ---
 
-### Задание 1
+# Домашнее задание "Отказоустойчивость в облаке"
+Выполнил: Соколов Алексей
 
-`Приведите ответ в свободной форме........`
+## 1. Terraform Playbook
 
-1. `Заполните здесь этапы выполнения, если требуется ....`
-2. `Заполните здесь этапы выполнения, если требуется ....`
-3. `Заполните здесь этапы выполнения, если требуется ....`
-4. `Заполните здесь этапы выполнения, если требуется ....`
-5. `Заполните здесь этапы выполнения, если требуется ....`
-6. 
+### providers.tf
+```hcl
+terraform {
+  required_providers {
+    yandex = {
+      source = "yandex-cloud/yandex"
+    }
+  }
+}
 
-```
-Поле для вставки кода...
-....
-....
-....
-....
-```
-
-`При необходимости прикрепитe сюда скриншоты
-![Название скриншота 1](ссылка на скриншот 1)`
-
-
----
-
-### Задание 2
-
-`Приведите ответ в свободной форме........`
-
-1. `Заполните здесь этапы выполнения, если требуется ....`
-2. `Заполните здесь этапы выполнения, если требуется ....`
-3. `Заполните здесь этапы выполнения, если требуется ....`
-4. `Заполните здесь этапы выполнения, если требуется ....`
-5. `Заполните здесь этапы выполнения, если требуется ....`
-6. 
-
-```
-Поле для вставки кода...
-....
-....
-....
-....
+provider "yandex" {
+  service_account_key_file = "key.json"
+  folder_id                = var.folder_id
+  zone                     = var.zone
+}
 ```
 
-`При необходимости прикрепитe сюда скриншоты
-![Название скриншота 2](ссылка на скриншот 2)`
+### variables.tf
+```hcl
+variable "folder_id" {
+  description = "ID каталога в Yandex Cloud"
+  type        = string
+  default     = "b1gsvg30664fm4410610"
+}
 
-
----
-
-### Задание 3
-
-`Приведите ответ в свободной форме........`
-
-1. `Заполните здесь этапы выполнения, если требуется ....`
-2. `Заполните здесь этапы выполнения, если требуется ....`
-3. `Заполните здесь этапы выполнения, если требуется ....`
-4. `Заполните здесь этапы выполнения, если требуется ....`
-5. `Заполните здесь этапы выполнения, если требуется ....`
-6. 
-
-```
-Поле для вставки кода...
-....
-....
-....
-....
+variable "zone" {
+  description = "Зона доступности"
+  type        = string
+  default     = "ru-central1-a"
+}
 ```
 
-`При необходимости прикрепитe сюда скриншоты
-![Название скриншота](ссылка на скриншот)`
+### network.tf
+```hcl
+resource "yandex_vpc_network" "network" {
+  name = "hw-network"
+}
 
-### Задание 4
-
-`Приведите ответ в свободной форме........`
-
-1. `Заполните здесь этапы выполнения, если требуется ....`
-2. `Заполните здесь этапы выполнения, если требуется ....`
-3. `Заполните здесь этапы выполнения, если требуется ....`
-4. `Заполните здесь этапы выполнения, если требуется ....`
-5. `Заполните здесь этапы выполнения, если требуется ....`
-6. 
-
-```
-Поле для вставки кода...
-....
-....
-....
-....
+resource "yandex_vpc_subnet" "subnet" {
+  name           = "hw-subnet"
+  zone           = var.zone
+  network_id     = yandex_vpc_network.network.id
+  v4_cidr_blocks = ["10.0.1.0/24"]
+}
 ```
 
-`При необходимости прикрепитe сюда скриншоты
-![Название скриншота](ссылка на скриншот)`
+### instances.tf
+```hcl
+resource "yandex_compute_instance" "web" {
+  count       = 2
+  name        = "web-vm-${count.index + 1}"
+  platform_id = "standard-v1"
+
+  resources {
+    cores         = 2
+    memory        = 1
+    core_fraction = 20
+  }
+
+  scheduling_policy {
+    preemptible = true
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = "fd8li2lvvfc6bdj4c787"
+      size     = 10
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.subnet.id
+    nat       = true
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file("C:/Users/admin/.ssh/id_ed25519.pub")}"
+    
+    user-data = <<-EOF
+      #cloud-config
+      package_update: true
+      packages:
+        - nginx
+      runcmd:
+        - [ systemctl, enable, nginx ]
+        - [ systemctl, start, nginx ]
+    EOF
+  }
+}
+```
+
+### balancer.tf
+```hcl
+resource "yandex_lb_target_group" "web-group" {
+  name = "web-target-group"
+
+  dynamic "target" {
+    for_each = yandex_compute_instance.web[*].network_interface[0].ip_address
+    content {
+      subnet_id = yandex_vpc_subnet.subnet.id
+      address   = target.value
+    }
+  }
+}
+
+resource "yandex_lb_network_load_balancer" "web-lb" {
+  name = "web-network-load-balancer"
+
+  listener {
+    name = "http-listener"
+    port = 80
+    external_address_spec {
+      ip_version = "ipv4"
+    }
+  }
+
+  attached_target_group {
+    target_group_id = yandex_lb_target_group.web-group.id
+
+    healthcheck {
+      name = "http-healthcheck"
+      http_options {
+        port = 80
+        path = "/"
+      }
+    }
+  }
+}
+```
+
+### outputs.tf
+```hcl
+output "lb_external_ip" {
+  description = "Внешний IP-адрес балансировщика"
+  value       = tolist(tolist(yandex_lb_network_load_balancer.web-lb.listener)[0].external_address_spec)[0].address
+}
+```
+
+## 2. Созданные виртуальные машины
+![Виртуальная машина 1](img/vm.png)
+![Виртуальная машина 2](img/vm2.png)
+
+## 3. Статус балансировщика и целевой группы
+![Статус балансировщика](img/lb.png)
+![Статус целевой группы](img/lb2.png)
+
+## 4. Ответ Nginx
+![Страница Nginx](img/nginx.png)
